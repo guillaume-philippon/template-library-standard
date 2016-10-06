@@ -3,6 +3,10 @@ unique template features/fetch-crl/config;
 
 variable FETCH_CRL_QUIET ?= true;
 variable FETCH_CRL_FORCE_OVERWRITE ?= true;
+# This avoid having fetch-crl-boot returning a non-zero exit status on
+# transient errors. Does not apply to the cron.
+# Ignored (but harmless) if fetch-crl < 3.0.13.
+variable FETCH_CRL_BOOT_IGNORE_RETRIEVAL_ERRORS ?= true;
 
 variable SITE_DEF_GRIDSEC_ROOT ?= "/etc/grid-security";
 variable SITE_DEF_HOST_CERT    ?= SITE_DEF_GRIDSEC_ROOT+"/hostcert.pem";
@@ -11,31 +15,53 @@ variable SITE_DEF_CERTDIR      ?= SITE_DEF_GRIDSEC_ROOT+"/certificates";
 
 # Include RPMs
 variable RPMS_CONFIG_SUFFIX ?= '';
-include { 'features/fetch-crl/rpms' + RPMS_CONFIG_SUFFIX };
+include 'features/fetch-crl/rpms' + RPMS_CONFIG_SUFFIX;
 
 # Define fetch-crl version if not defined when adding RPMs
 variable FETCH_CRL_VERSION ?= '3.0';
 
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------- 
 # fetch-crl configuration
-# ----------------------------------------------------------------------------
-include { 'components/sysconfig/config' };
-"/software/components/sysconfig/files/fetch-crl/CRLDIR" = SITE_DEF_CERTDIR;
-"/software/components/sysconfig/files/fetch-crl/FORCE_OVERWRITE" = if ( FETCH_CRL_FORCE_OVERWRITE ) {
-                                                                     'yes';
-                                                                   } else {
-                                                                     'no';
-                                                                   };
-"/software/components/sysconfig/files/fetch-crl/QUIET" = if ( FETCH_CRL_QUIET ) {
-                                                           'yes';
-                                                         } else {
-                                                           'no';
-                                                         };
+# ---------------------------------------------------------------------------- 
+include 'components/metaconfig/config';
+include 'features/fetch-crl/schema';
+# property daemons is not supported in older version of metaconfig but unfortunately
+# metaconfig doesn't publish its version until 15.12. Until the version is defined
+# use QUATTOR_RELEASE to determine the version.
+prefix '/software/components/metaconfig/services/{/etc/sysconfig/fetch-crl}';
+'daemons' = {
+  if ( QUATTOR_RELEASE >= '15' ) {
+    nlist('fetch-crl-boot', 'restart');
+  } else {
+    null;
+  };
+};
+'backup' = '.old';
+'module' = 'tiny';
+'contents' = {
+  SELF["CRLDIR"] = SITE_DEF_CERTDIR;
+  if ( FETCH_CRL_BOOT_IGNORE_RETRIEVAL_ERRORS ) {
+    SELF["FETCHCRL_BOOT_OPTIONS"] = '"--define rcmode=noretrievalerrors"';
+  };
+  SELF["FORCE_OVERWRITE"] = if ( FETCH_CRL_FORCE_OVERWRITE ) {
+                              'yes';
+                            } else {
+                              'no';
+                            };
+  SELF["QUIET"] = if ( FETCH_CRL_QUIET ) {
+                    'yes';
+                  } else {
+                    'no';
+                  };
+  SELF;
+};
+bind '/software/components/metaconfig/services/{/etc/sysconfig/fetch-crl}/contents' = fetch_crl_sysconfig_keys;
 
-# ----------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------- 
 # cron
-# ----------------------------------------------------------------------------
-include { 'components/cron/config' };
+# ---------------------------------------------------------------------------- 
+include 'components/cron/config';
 "/software/components/cron/entries" = {
   if (FETCH_CRL_VERSION < '3.0') {
     cron_cmd = '/usr/sbin/fetch-crl  --no-check-certificate --loc '+SITE_DEF_CERTDIR+' -out '+SITE_DEF_CERTDIR+' -a 24 --quiet';
@@ -54,10 +80,10 @@ include { 'components/cron/config' };
 };
 
 
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------- 
 # altlogrotate
-# ----------------------------------------------------------------------------
-include { 'components/altlogrotate/config' };
+# ---------------------------------------------------------------------------- 
+include 'components/altlogrotate/config'; 
 "/software/components/altlogrotate/entries" = {
   if (FETCH_CRL_VERSION < '3.0') {
     SELF['fetch-crl-cron'] =   nlist("pattern", "/var/log/fetch-crl-cron.ncm-cron.log",
@@ -78,9 +104,9 @@ include { 'components/altlogrotate/config' };
 };
 
 
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------- 
 # chkconfig
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------- 
 "/software/components/chkconfig/service" = {
   if (FETCH_CRL_VERSION >= '3.0') {
     # Run fetch-crl on boot
